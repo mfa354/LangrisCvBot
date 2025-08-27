@@ -298,3 +298,4 @@ class VCFGeneratorBot:
 
 if __name__ == "__main__":
     VCFGeneratorBot().run()
+
