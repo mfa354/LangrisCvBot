@@ -1,140 +1,142 @@
 # access_control.py
-import time
 import logging
-from html import escape
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import storage
-from config import (
-    ADMIN_IDS,
-    REQUIRED_CHANNEL,   # hanya untuk ditampilkan di info/paywall (opsional)
-    REQUIRED_GROUP,     # hanya untuk ditampilkan di info/paywall (opsional)
-    show_menu,          # untuk /start
-)
+from config import ADMIN_IDS, REQUIRED_CHANNEL, REQUIRED_GROUP, show_menu
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["ensure_access_start", "ensure_access_feature"]
 
-
-# ====== Helpers status akses ======
-def _now() -> int:
-    return int(time.time())
-
+# ===== Helpers =====
 def _is_admin(uid: int) -> bool:
     try:
         return int(uid) in set(ADMIN_IDS or [])
     except Exception:
         return False
 
-def _has_active_pass(u: dict) -> bool:
-    """
-    Cek masa aktif manual yang di-set owner.
-    Mendukung kolom 'paid_until' (baru) dan 'vip_until' (legacy) agar kompatibel.
-    """
+async def _check_join(bot, user_id: int) -> tuple[bool, bool]:
+    """Return (joined_channel, joined_group)."""
+    joined_channel = False
+    joined_group = False
     try:
-        pu = int(u.get("paid_until") or 0)
-        vu = int(u.get("vip_until") or 0)
-        return max(pu, vu) > _now()
+        if REQUIRED_CHANNEL:
+            ch = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+            joined_channel = ch.status not in ("left", "kicked")
     except Exception:
-        return False
-
-def _trial_active(u: dict) -> bool:
-    """Anggap storage menyimpan trial_end (epoch detik)."""
+        pass
     try:
-        return int(u.get("trial_end") or 0) > _now()
+        if REQUIRED_GROUP:
+            gr = await bot.get_chat_member(REQUIRED_GROUP, user_id)
+            joined_group = gr.status not in ("left", "kicked")
     except Exception:
-        return False
+        pass
+    return joined_channel, joined_group
 
-
-# ====== Paywall manual (EDIT pesan, fallback kirim baru) ======
-async def _show_paywall(target):
-    """
-    target: CallbackQuery atau Message.
-    Upaya pertama: EDIT pesan terakhir (menu) → jadi paywall.
-    Jika gagal edit, fallback: reply pesan baru.
-    """
-    ch = escape(str(REQUIRED_CHANNEL)) if REQUIRED_CHANNEL else "-"
-    gr = escape(str(REQUIRED_GROUP)) if REQUIRED_GROUP else "-"
+# ===== UI =====
+async def _show_join_gate(target, joined_channel=False, joined_group=False, edit=False):
+    """Pesan kalau belum join channel/group."""
+    if joined_channel and not joined_group:
+        status = "✅ Sudah join channel\n❌ Belum join group"
+    elif joined_group and not joined_channel:
+        status = "✅ Sudah join group\n❌ Belum join channel"
+    else:
+        status = "❌ Belum join channel & group"
 
     text = (
-        "🔒 *Akses diperlukan*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⏳ *Trial kamu sudah habis.*\n"
-        "👤 *Untuk melanjutkan, hubungi owner:* @pudidi\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🛡️ *Syarat komunitas*\n"
-        f"• Channel: {ch}\n"
-        f"• Group: {gr}\n"
+        "⚠️ Untuk menggunakan bot ini kamu harus join komunitas:\n\n"
+        f"{status}\n\n"
+        f"📢 Channel: {REQUIRED_CHANNEL}\n"
+        f"💬 Group: {REQUIRED_GROUP}\n\n"
+        "Setelah join, klik tombol 🔁 *Cek Lagi*."
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👤 Owner", url="https://t.me/pudidi")],
-        [InlineKeyboardButton("🔁 Cek Lagi", callback_data="ac_check")],
-        [InlineKeyboardButton("🏠 Home", callback_data="nav_home")]
+        [
+            InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"),
+            InlineKeyboardButton("💬 Join Group", url=f"https://t.me/{REQUIRED_GROUP.lstrip('@')}")
+        ],
+        [InlineKeyboardButton("🔁 Cek Lagi", callback_data="ac_check")]
     ])
 
     try:
-        if hasattr(target, "edit_message_text"):
+        if edit and hasattr(target, "edit_message_text"):
             await target.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-        if hasattr(target, "edit_text"):
-            await target.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-    except Exception as e:
-        logger.debug(f"paywall edit failed → fallback send: {e}")
-
-    try:
-        if hasattr(target, "message"):  # CallbackQuery
-            await target.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
-        else:                           # Message
+        elif hasattr(target, "reply_text"):
             await target.reply_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"paywall send failed: {e}")
+        logger.warning(f"_show_join_gate error: {e}")
 
+async def _show_paywall(target):
+    """Pesan kalau akses habis → hubungi owner."""
+    text = (
+        "🔒 *Akses diperlukan*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏳ *Trial/Akses kamu sudah habis.*\n"
+        "👤 *Hubungi owner:* @langrisown\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ Wajib join Channel: {REQUIRED_CHANNEL}\n"
+        f"🛡️ Wajib join Group: {REQUIRED_GROUP}\n"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👤 Owner", url="https://t.me/langrisown")],
+        [InlineKeyboardButton("🏠 Home", callback_data="nav_home")]
+    ])
+    try:
+        if hasattr(target, "edit_message_text"):
+            await target.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await target.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"_show_paywall error: {e}")
 
-# ====== Public API dipanggil dari main.py ======
+# ===== Public API =====
 async def ensure_access_start(update, context) -> bool:
-    """
-    Dipanggil saat /start atau tombol 'Cek Lagi'.
-    Sesuai permintaan: /start TIDAK memblokir — langsung tampil menu utama.
-    """
+    """Dipanggil saat /start atau cek lagi."""
     try:
         context.user_data.clear()
-        msg = getattr(update, "message", None)
-        if msg:
-            await show_menu(msg, "main")
+        user = update.effective_user
+        if not user:
+            return False
+        uid = user.id
+
+        if _is_admin(uid):
+            if getattr(update, "callback_query", None):
+                await show_menu(update.callback_query, "main", edit=True)
+            else:
+                await show_menu(update.message, "main")
+            return True
+
+        joined_channel, joined_group = await _check_join(context.bot, uid)
+        if not (joined_channel and joined_group):
+            if getattr(update, "callback_query", None):
+                await _show_join_gate(update.callback_query, joined_channel, joined_group, edit=True)
+            else:
+                await _show_join_gate(update.message, joined_channel, joined_group, edit=False)
+            return False
+
+        if getattr(update, "callback_query", None):
+            await show_menu(update.callback_query, "main", edit=True)
         else:
-            q = getattr(update, "callback_query", None)
-            if q:
-                await show_menu(q, "main", edit=True)
+            await show_menu(update.message, "main")
         return True
     except Exception as e:
         logger.error(f"ensure_access_start error: {e}")
         return False
 
-
 async def ensure_access_feature(update, context) -> bool:
-    """
-    Dipanggil SETIAP KALI user menekan tombol fitur / kirim input untuk fitur.
-    Jika akses belum valid → EDIT pesan menu jadi paywall manual.
-    Return:
-      True  → lanjutkan fitur
-      False → sudah ditahan & paywall ditampilkan
-    """
+    """Dipanggil saat user klik fitur/menu."""
     try:
         user = None
         msg_target = None
 
-        q = getattr(update, "callback_query", None)
-        if q:
-            user = q.from_user
-            msg_target = q
-
-        m = getattr(update, "message", None)
-        if (user is None) and m:
-            user = m.from_user
-            msg_target = m
+        if getattr(update, "callback_query", None):
+            user = update.callback_query.from_user
+            msg_target = update.callback_query
+        elif getattr(update, "message", None):
+            user = update.message.from_user
+            msg_target = update.message
 
         if not user:
             return True
@@ -143,16 +145,19 @@ async def ensure_access_feature(update, context) -> bool:
         if _is_admin(uid):
             return True
 
-        # Ambil profil user dari storage
-        u = storage.get_or_create_user(uid)
-        if _has_active_pass(u) or _trial_active(u):
+        joined_channel, joined_group = await _check_join(context.bot, uid)
+        if not (joined_channel and joined_group):
+            await _show_join_gate(msg_target, joined_channel, joined_group, edit=True)
+            return False
+
+        # pakai unified status dari storage
+        status = storage.get_user_status(uid)
+        if status["type"] in ("owner", "permanent", "1hari", "1minggu", "1bulan", "trial"):
             return True
 
-        # Tidak punya akses → tampilkan paywall manual
+        # expired
         await _show_paywall(msg_target)
         return False
-
     except Exception as e:
         logger.error(f"ensure_access_feature error: {e}")
-        # Untuk keamanan UX: jangan memblokir saat terjadi error
         return True
