@@ -5,7 +5,7 @@ from telegram.error import BadRequest
 from html import escape
 
 import storage
-from config import REQUIRED_CHANNEL, REQUIRED_GROUP, TRIAL_MINUTES, OWNER_ID
+from config import REQUIRED_CHANNEL, REQUIRED_GROUP, TRIAL_MINUTES, is_owner
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,9 @@ def _fmt_info_text(user_id: int) -> str:
     gr = escape(REQUIRED_GROUP or "-")
 
     status = storage.get_user_status(user_id)
-    now = _now_ts()
 
     # === Mapping tipe akses ===
-    if status["type"] == "owner":
+    if is_owner(user_id):
         return (
             "👑 <b>INFO OWNER</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━\n"

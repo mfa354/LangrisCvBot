@@ -5,19 +5,34 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 # Load env
 load_dotenv()
 
-# Bot configuration
+# =========================
+# Bot Configuration
+# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required!")
 
-# ====== Admin IDs (hardcode di sini) ======
-# Hanya 1 OWNER yang bisa /admin dan mengatur user
-OWNER_ID = 7096405831  # ganti dengan ID numeric owner kamu (bukan username)
-ADMIN_IDS = {
-    OWNER_ID,  # otomatis juga dianggap admin
+# =========================
+# OWNER & ADMIN SETTINGS
+# =========================
+# Bisa lebih dari 1 owner (misalnya owner utama + cadangan)
+OWNER_IDS = {
+    7096405831,   # Owner utama
+    1234567890,   # Owner cadangan (ganti dengan ID numeric)
 }
 
-# ====== ACCESS GATE SETTINGS ======
+ADMIN_IDS = set(OWNER_IDS)  # Semua owner otomatis admin
+
+def is_owner(uid: int) -> bool:
+    """Cek apakah user adalah owner."""
+    try:
+        return int(uid) in OWNER_IDS
+    except Exception:
+        return False
+
+# =========================
+# ACCESS GATE SETTINGS
+# =========================
 # Pastikan bot adalah ADMIN di channel & group ini
 REQUIRED_CHANNEL = "@langrisinfo"
 REQUIRED_GROUP   = "@langrismarket"
@@ -167,7 +182,9 @@ MENUS = {
     },
 }
 
-# ====== Instruksi teks ======
+# =========================
+# Instruksi teks
+# =========================
 INSTRUCTIONS = {
     "cv_instruction": (
         "📤 *Upload file TXT Anda*\n"
@@ -209,6 +226,9 @@ INSTRUCTIONS = {
     ),
 }
 
+# =========================
+# Menu helper
+# =========================
 async def show_menu(message_target, menu_key, edit=False, **kwargs):
     menu = MENUS.get(menu_key)
     if not menu:
@@ -241,7 +261,9 @@ async def show_menu(message_target, menu_key, edit=False, **kwargs):
 def get_instruction(key):
     return INSTRUCTIONS.get(key, "Instruksi tidak ditemukan.")
 
+# =========================
 # Settings fitur lain
+# =========================
 MAX_FILES_V2 = 10
 UPLOAD_TIMEOUT = 3.0
 SLEEP_BETWEEN_FILES = 0.3

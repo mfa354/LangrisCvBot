@@ -3,7 +3,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import storage
-from config import ADMIN_IDS, REQUIRED_CHANNEL, REQUIRED_GROUP, show_menu
+from config import REQUIRED_CHANNEL, REQUIRED_GROUP, show_menu, is_owner
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,9 @@ __all__ = ["ensure_access_start", "ensure_access_feature"]
 
 # ===== Helpers =====
 def _is_admin(uid: int) -> bool:
+    """Cek apakah user adalah owner/admin."""
     try:
-        return int(uid) in set(ADMIN_IDS or [])
+        return is_owner(uid)  # langsung pakai helper dari config
     except Exception:
         return False
 

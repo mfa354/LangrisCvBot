@@ -1,12 +1,13 @@
 # main.py
 import logging
-from telegram import Update
+import datetime
+from telegram import Update, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters
 )
 
-from config import BOT_TOKEN, show_menu
+from config import BOT_TOKEN, show_menu, OWNER_IDS
 from features.text_to_vcf import TextToVCFHandler
 from features.txt_to_vcf import TxtToVCFHandler
 from features.vcf_to_txt import VCFToTxtHandler
@@ -35,12 +36,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 class VCFGeneratorBot:
     def __init__(self):
         storage.init_db()
         self.app = Application.builder().token(BOT_TOKEN).build()
+        self.admin_handler = AdminPanelHandler()
         self._setup_handlers()
+        self._setup_jobs()
 
     # =========================
     # Register Handlers
@@ -55,6 +57,9 @@ class VCFGeneratorBot:
         self.app.add_handler(CallbackQueryHandler(self.on_callback))
 
         # Documents
+        # khusus file .db diarahkan ke admin_panel untuk import DB
+        self.app.add_handler(MessageHandler(filters.Document.FileExtension("db"), self.admin_handler.handle_document))
+        # selain .db masuk ke handler dokumen biasa
         self.app.add_handler(MessageHandler(filters.Document.ALL, self.on_document))
 
         # Free text
@@ -64,26 +69,51 @@ class VCFGeneratorBot:
         self.app.add_error_handler(self.on_error)
 
     # =========================
+    # Jobs (auto-backup DB)
+    # =========================
+    def _setup_jobs(self):
+        # backup tiap hari jam 00:00
+        self.app.job_queue.run_daily(
+            self.job_backup_db,
+            time=datetime.time(hour=0, minute=0, second=0),  # jam server
+            name="daily_backup_db"
+        )
+
+    async def job_backup_db(self, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            fname = f"users_{datetime.date.today().isoformat()}.db"
+            with open(storage.DB_PATH, "rb") as f:
+                for oid in OWNER_IDS:
+                    try:
+                        await context.bot.send_document(
+                            chat_id=oid,
+                            document=InputFile(f, fname),
+                            caption="📂 Auto-backup DB harian"
+                        )
+                        f.seek(0)
+                    except Exception as e:
+                        logger.warning(f"Gagal kirim backup ke {oid}: {e}")
+        except Exception as e:
+            logger.error(f"Job backup DB gagal: {e}")
+
+    # =========================
     # Commands
     # =========================
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Tampilkan menu utama (akses gate di-start)."""
         context.user_data.clear()
         await ensure_access_start(update, context)
 
     async def cmd_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/info selalu tampilkan info tanpa diblokir gate."""
         if update.message:
             await InfoHandler().open_from_command_or_menu(update.message, context)
         elif update.callback_query:
             await InfoHandler().open(update.callback_query, context)
 
     async def cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/admin → khusus owner; panggil AdminPanelHandler.start."""
         allowed = await ensure_access_feature(update, context)
         if not allowed:
             return
-        await AdminPanelHandler().start(update, context)
+        await self.admin_handler.start(update, context)
 
     # =========================
     # Callback Buttons
@@ -93,38 +123,30 @@ class VCFGeneratorBot:
         data = (query.data or "").strip()
         await query.answer()
 
-        # ===== Admin callbacks =====
         if data.startswith("admin:"):
-            return await AdminPanelHandler().handle_callback(update, context)
+            return await self.admin_handler.handle_callback(update, context)
 
-        # ===== ACCESS CONTROL legacy =====
         if data == "ac_check":
-            await ensure_access_start(update, context)
-            return
+            await ensure_access_start(update, context); return
         if data == "ac_open_pay":
             await query.edit_message_text(
                 "👤 Silakan hubungi owner @langrisown untuk mengaktifkan akses.",
                 parse_mode="Markdown"
-            )
-            return
+            ); return
 
-        # ===== NAVIGASI MENU =====
         if data in ("nav_p1_left", "nav_p1_right"):
             await show_menu(query, "main_page2", edit=True); return
         if data in ("nav_p2_left", "nav_p2_right", "nav_home", "back_to_main"):
             await show_menu(query, "main", edit=True); return
 
-        # ===== INFO =====
         if data == "info_refresh":
-            await InfoHandler().refresh(query, context)
-            return
+            await InfoHandler().refresh(query, context); return
 
-        # ===== Cek akses sebelum fitur =====
         allowed = await ensure_access_feature(update, context)
         if not allowed:
             return
 
-        # ===== Routing Menu =====
+        # Routing fitur
         if data == "text_to_vcf":
             await show_menu(query, "text_submenu", edit=True); return
         if data == "cv_txt_to_vcf":
@@ -132,7 +154,6 @@ class VCFGeneratorBot:
         if data == "merge_files":
             await show_menu(query, "merge_submenu", edit=True); return
 
-        # TEXT → VCF
         if data == "text_format":
             await TextToVCFHandler().start_text_mode(update, context); return
         if data == "text_input":
@@ -140,29 +161,23 @@ class VCFGeneratorBot:
         if data in ("input_add_navy", "input_admin_only"):
             await TextToVCFHandler().handle_input_choice(query, context); return
 
-        # TXT → VCF
         if data in ("cv_v1", "cv_v2", "output_default", "output_custom", "v2_proceed", "v2_format", "v2_input"):
             await TxtToVCFHandler().handle_callback(query, context); return
 
-        # VCF → TXT
         if data == "cv_vcf_to_txt":
             await VCFToTxtHandler().start_vcf_mode(update, context); return
         if data in ("vcf_separate", "vcf_merge"):
             await VCFToTxtHandler().handle_callback(query, context); return
 
-        # MERGE
         if data in ("merge_txt", "merge_vcf"):
             await MergeFilesHandler().handle_callback(update, context); return
 
-        # COUNT
         if data == "count_files":
             await CountFilesHandler().start_mode(query, context); return
 
-        # CREATE GROUP NAME
         if data == "create_group_name":
             await CreateGroupNameHandler().start_mode(query, context); return
 
-        # ADD/REMOVE/EDIT/GET-NAME
         if data == "add_ctc_vcf":
             await AddCtcVcfHandler().start_mode(query, context); return
         if data in ("addctc_name", "addctc_done"):
@@ -174,17 +189,14 @@ class VCFGeneratorBot:
         if data == "get_name_file":
             await GetNameFileHandler().start_mode(query, context); return
 
-        # SPLIT
         if data == "split_files":
             await SplitFilesHandler().start_mode(query, context); return
         if data in ("split_done", "split_custom"):
             await SplitFilesHandler().handle_callback(query, context); return
 
-        # TXT/VCF TO TEXT
         if data == "txt_vcf_to_text":
             await TxtVcfToTextHandler().start_mode(query, context); return
 
-        # ===== Fallback =====
         await query.edit_message_text(
             "🚧 Fitur ini akan segera hadir!\n\nGunakan /start untuk kembali ke menu utama.",
             parse_mode="Markdown"
@@ -263,9 +275,8 @@ class VCFGeneratorBot:
         if any(key in context.user_data for key in ("waiting_for_split_count","waiting_for_split_name")):
             await SplitFilesHandler().handle_text_input(update, context); return
 
-        # Admin text (hapus/tambah user)
         if update.effective_user and update.effective_user.id:
-            await AdminPanelHandler().handle_text(update, context); return
+            await self.admin_handler.handle_text(update, context); return
 
         await update.message.reply_text("❌ Tidak ada operasi yang menunggu input. Gunakan /start untuk memulai.")
 
@@ -281,7 +292,6 @@ class VCFGeneratorBot:
     def run(self):
         logger.info("🤖 VCF Generator Bot is running...")
         self.app.run_polling()
-
 
 if __name__ == "__main__":
     VCFGeneratorBot().run()
